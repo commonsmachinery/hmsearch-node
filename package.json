@@ -1,0 +1,25 @@
+{
+    "name": "hmsearch",
+    "description": "Efficiently find hashes within a certain hamming distance, typically used for perceptual hashing.",
+    "keywords": [
+        "hamming",
+        "hash",
+        "hashes"
+    ],
+    "version": "0.0.1",
+    "license": "MIT",
+    "author": {
+        "name": "Commons Machinery",
+        "email": "dev@commonsmachinery.se"
+    },
+    "main": "./index",
+    "scripts": {
+        "install": "node-gyp rebuild"
+    },
+    "devDependencies": {
+        "jshint": "*",
+        "expect.js": "0.3.x",
+        "mocha": "1.x.x",
+        "temp": "0.8.x"
+    }
+}
