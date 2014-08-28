@@ -1,0 +1,3 @@
+[submodule "hmsearch"]
+	path = hmsearch
+	url = https://github.com/commonsmachinery/hmsearch.git
