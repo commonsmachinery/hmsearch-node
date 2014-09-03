@@ -19,10 +19,17 @@ class HmObject : public node::ObjectWrap {
 public:
     static void init();
 
-    static Handle<Value> create_with_db(HmSearch *db);
+    static Local<Value> create_with_db(HmSearch *db);
 
 private:
-    HmObject() : _db(NULL) { }
+    HmObject()
+        : _db(NULL)
+        , _db_users(0)
+        {
+            uv_mutex_init(&_lock);
+            uv_cond_init(&_cond);
+        }
+
     ~HmObject() {
         if (_db) {
             delete _db;
@@ -40,11 +47,118 @@ private:
     static NAN_METHOD(lookup_sync);
     static NAN_METHOD(close_sync);
 
+    // Since we may have worker threads active, we must protect the
+    // database object from being closed while any insert or lookup
+    // operation is in progress.
+
+    // Get the database, increasing the user count
+    HmSearch* get_db();
+
+    // Release the database, decreasing the user count
+    void release_db();
+
+    uv_mutex_t _lock;
+    uv_cond_t _cond;
     HmSearch* _db;
+    int _db_users;
 };
 
 Persistent<Function> HmObject::constructor;
 Persistent<FunctionTemplate> HmObject::prototype;
+
+
+/*
+ * Async workers
+ */
+class InitWorker : public NanAsyncWorker
+{
+public:
+    InitWorker(NanCallback *callback,
+               Handle<Value> path,
+               unsigned hash_bits,
+               unsigned max_error,
+               uint64_t num_hashes
+        )
+        : NanAsyncWorker(callback)
+        , _path(path)
+        , _hash_bits(hash_bits)
+        , _max_error(max_error)
+        , _num_hashes(num_hashes)
+        { }
+
+    void Execute() {
+        std::string error_msg;
+        if (!HmSearch::init(*_path, _hash_bits, _max_error, _num_hashes, &error_msg)) {
+            SetErrorMessage(error_msg.c_str());
+        }
+    }
+
+private:
+    NanUtf8String _path;
+    unsigned _hash_bits;
+    unsigned _max_error;
+    uint64_t _num_hashes;
+};
+
+
+class OpenWorker : public NanAsyncWorker
+{
+public:
+    OpenWorker(NanCallback *callback,
+               Handle<Value> path,
+               HmSearch::OpenMode mode)
+        : NanAsyncWorker(callback)
+        , _path(path)
+        , _mode(mode)
+        , _db(NULL)
+        { }
+
+    void Execute() {
+        std::string error_msg;
+        _db = HmSearch::open(*_path, _mode, &error_msg);
+        if (!_db) {
+            SetErrorMessage(error_msg.c_str());
+        }
+    }
+
+    void HandleOKCallback() {
+        NanScope();
+
+        Local<Value> obj = HmObject::create_with_db(_db);
+        Local<Value> argv[] = { NanNull(), obj };
+
+        callback->Call(2, argv);
+    }
+
+private:
+    NanUtf8String _path;
+    HmSearch::OpenMode _mode;
+    HmSearch* _db;
+};
+
+
+class HmObjectWorker : public NanAsyncWorker
+{
+public:
+    HmObjectWorker(NanCallback *callback,
+             Handle<Object> handle,
+             HmObject* obj)
+        : NanAsyncWorker(callback)
+        , _obj(obj)
+        {
+            // Make sure the object isn't GC:d under our feet
+            NanAssignPersistent(_handle, handle);
+        }
+
+    ~HmObjectWorker() {
+        NanDisposePersistent(_handle);
+    }
+
+private:
+    Persistent<Object> _handle;
+    HmObject *_obj;
+};
+
 
 
 void HmObject::init()
@@ -70,7 +184,7 @@ void HmObject::init()
 }
 
 
-Handle<Value> HmObject::create_with_db(HmSearch *db)
+Local<Value> HmObject::create_with_db(HmSearch *db)
 {
     NanEscapableScope();
 
@@ -93,6 +207,31 @@ HmObject* HmObject::unwrap(Handle<Object> handle)
 
     NanThrowTypeError("<this> is not a hmsearch object");
     return NULL;
+}
+
+
+HmSearch* HmObject::get_db()
+{
+    HmSearch *db = NULL;
+
+    uv_mutex_lock(&_lock);
+    if (_db) {
+        db = _db;
+        ++_db_users;
+    }
+    uv_mutex_unlock(&_lock);
+
+    return db;
+}
+
+void HmObject::release_db()
+{
+    uv_mutex_lock(&_lock);
+    if (--_db_users <= 0) {
+        // Tell pending close operation that it can proceed
+        uv_cond_broadcast(&_cond);
+    }
+    uv_mutex_unlock(&_lock);
 }
 
 
@@ -268,6 +407,35 @@ static NAN_METHOD(init_sync)
 }
 
 
+static NAN_METHOD(init_cb)
+{
+    NanScope();
+
+    if (args.Length() != 5) {
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
+    }
+
+    if (!args[0]->IsString() || !args[1]->IsNumber() || !args[2]->IsNumber() ||
+        !args[3]->IsNumber() || !args[4]->IsFunction()) {
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
+    }
+
+    Local<Function> callbackHandle = args[4].As<Function>();
+
+    NanAsyncQueueWorker(
+        new InitWorker(
+            new NanCallback(callbackHandle),
+            args[0],
+            args[1]->IntegerValue(),
+            args[2]->IntegerValue(),
+            args[3]->NumberValue()));
+
+    NanReturnUndefined();
+}
+
+
 static NAN_METHOD(open_sync)
 {
     NanScope();
@@ -298,20 +466,48 @@ static NAN_METHOD(open_sync)
 }
 
 
+static NAN_METHOD(open_cb)
+{
+    NanScope();
+
+    if (args.Length() != 3) {
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
+    }
+
+    if (!args[0]->IsString() || !args[1]->IsNumber() || !args[2]->IsFunction()) {
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
+    }
+
+    Local<Function> callbackHandle = args[2].As<Function>();
+
+    NanAsyncQueueWorker(
+        new OpenWorker(
+            new NanCallback(callbackHandle),
+            args[0],
+            HmSearch::OpenMode(args[1]->IntegerValue())));
+
+    NanReturnUndefined();
+}
+
+
+
 void module_init(Handle<Object> exports) {
     HmObject::init();
 
     exports->Set(NanNew<String>("READONLY"),
-                 NanNew<Integer>(HmSearch::READONLY));
+                 NanNew<Integer>(HmSearch::READONLY),
+                 static_cast<PropertyAttribute>(ReadOnly|DontDelete));
 
     exports->Set(NanNew<String>("READWRITE"),
-                 NanNew<Integer>(HmSearch::READWRITE));
+                 NanNew<Integer>(HmSearch::READWRITE),
+                 static_cast<PropertyAttribute>(ReadOnly|DontDelete));
 
-    exports->Set(NanNew<String>("initSync"),
-                 NanNew<FunctionTemplate>(init_sync)->GetFunction());
-
-    exports->Set(NanNew<String>("openSync"),
-                 NanNew<FunctionTemplate>(open_sync)->GetFunction());
+    node::SetMethod(exports, "init", init_cb);
+    node::SetMethod(exports, "initSync", init_sync);
+    node::SetMethod(exports, "open", open_cb);
+    node::SetMethod(exports, "openSync", open_sync);
 }
 
 NODE_MODULE(hmsearch, module_init)
