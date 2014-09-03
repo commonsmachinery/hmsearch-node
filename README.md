@@ -14,6 +14,11 @@ Ensure that Kyoto Cabinet is installed. On Ubuntu:
 
     apt-get install libkyotocabinet-dev kyotocabinet-util
 
+When building from the git repository the `hmsearch` submodule must be
+initialised on first checkout:
+
+    git submodule init
+    git submodule update
 
 API
 ---

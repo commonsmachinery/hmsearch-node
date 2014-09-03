@@ -5,7 +5,7 @@
  */
 
 #include <node.h>
-#include <v8.h>
+#include <nan.h>
 
 #include <hmsearch.h>
 
@@ -30,64 +30,55 @@ private:
         }
     }
 
-    static Handle<Value> New(const Arguments& args);
+    static NAN_METHOD(New);
     static HmObject* unwrap(Handle<Object> handle);
+
     static Persistent<Function> constructor;
-    static Persistent<Value> prototype;
+    static Persistent<FunctionTemplate> prototype;
 
-    static Handle<Value> insert_sync(const Arguments& args);
-    Handle<Value> insert(const Arguments& args, bool sync);
-
-    static Handle<Value> lookup_sync(const Arguments& args);
-    Handle<Value> lookup(const Arguments& args, bool sync);
-
-    static Handle<Value> close_sync(const Arguments& args);
-    Handle<Value> close(const Arguments& args, bool sync);
+    static NAN_METHOD(insert_sync);
+    static NAN_METHOD(lookup_sync);
+    static NAN_METHOD(close_sync);
 
     HmSearch* _db;
-
 };
 
 Persistent<Function> HmObject::constructor;
-Persistent<Value> HmObject::prototype;
+Persistent<FunctionTemplate> HmObject::prototype;
 
 
 void HmObject::init()
 {
-    HandleScope scope;
+    NanScope();
 
     // Prepare constructor template
-    Local<FunctionTemplate> tpl = FunctionTemplate::New(New);
-    tpl->SetClassName(String::NewSymbol("HmObject"));
+    Local<FunctionTemplate> tpl = NanNew<FunctionTemplate>(New);
+
+    tpl->SetClassName(NanNew<String>("HmObject"));
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
     // Prototype
-    tpl->PrototypeTemplate()->Set(String::NewSymbol("insertSync"),
-                                  FunctionTemplate::New(insert_sync)->GetFunction());
-    tpl->PrototypeTemplate()->Set(String::NewSymbol("lookupSync"),
-                                  FunctionTemplate::New(lookup_sync)->GetFunction());
-    tpl->PrototypeTemplate()->Set(String::NewSymbol("closeSync"),
-                                  FunctionTemplate::New(close_sync)->GetFunction());
+    NanSetPrototypeTemplate(tpl, "insertSync",
+                            NanNew<FunctionTemplate>(insert_sync)->GetFunction());
+    NanSetPrototypeTemplate(tpl, "lookupSync",
+                            NanNew<FunctionTemplate>(lookup_sync)->GetFunction());
+    NanSetPrototypeTemplate(tpl, "closeSync",
+                            NanNew<FunctionTemplate>(close_sync)->GetFunction());
 
-    constructor = Persistent<Function>::New(tpl->GetFunction());
-
-    // Get hold of the prototype for our objects so we can do some
-    // sanity checking on the objects the caller passes to us later
-
-    Local<Object> obj = constructor->NewInstance();
-    prototype = Persistent<Value>::New(obj->GetPrototype());
+    NanAssignPersistent(prototype, tpl);
+    NanAssignPersistent(constructor, tpl->GetFunction());
 }
 
 
 Handle<Value> HmObject::create_with_db(HmSearch *db)
 {
-    HandleScope scope;
+    NanEscapableScope();
 
     Local<Value> jsobj = constructor->NewInstance();
     HmObject* obj = ObjectWrap::Unwrap<HmObject>(jsobj->ToObject());
     obj->_db = db;
 
-    return scope.Close(jsobj);
+    return NanEscapeScope(jsobj);
 }
 
 
@@ -96,182 +87,152 @@ HmObject* HmObject::unwrap(Handle<Object> handle)
     // Sanity check the object before we accept it as one of our own
     // wrapped objects
 
-    // Basic checks done as asserts by UnWrap()
-    if (!handle.IsEmpty() && handle->InternalFieldCount() == 1) {
-        // Check the prototype.  This effectively stops inheritance,
-        // but since we don't expose a constructor that isn't feasible
-        // anyway.
-        Handle<Value> objproto = handle->GetPrototype();
-        if (objproto == prototype) {
-            // OK, this is us
-            return ObjectWrap::Unwrap<HmObject>(handle);
-        }
+    if (NanHasInstance(prototype, handle)) {
+        return ObjectWrap::Unwrap<HmObject>(handle);
     }
 
-    ThrowException(Exception::TypeError(String::New("<this> is not a hmsearch object")));
+    NanThrowTypeError("<this> is not a hmsearch object");
     return NULL;
 }
 
 
-Handle<Value> HmObject::New(const Arguments& args)
+NAN_METHOD(HmObject::New)
 {
-    HandleScope scope;
+    NanScope();
 
     if (args.IsConstructCall()) {
         // Invoked as constructor: `new HmObject(...)`
         HmObject* obj = new HmObject();
         obj->Wrap(args.This());
-        return args.This();
+        NanReturnValue(args.This());
     }
     else {
         // Invoked as plain function `HmObject(...)`, turn into construct call.
-        return scope.Close(constructor->NewInstance());
+        NanReturnValue(constructor->NewInstance());
     }
 }
 
 
-Handle<Value> HmObject::insert_sync(const Arguments& args)
+NAN_METHOD(HmObject::insert_sync)
 {
+    NanScope();
+
     HmObject* obj = unwrap(args.This());
 
-    if (obj) {
-        return obj->insert(args, true);
+    if (!obj) {
+        NanReturnUndefined();
     }
-    else {
-        return Handle<Value>();
-    }
-}
-
-
-Handle<Value> HmObject::insert(const Arguments& args, bool sync)
-{
-    HandleScope scope;
 
     if (args.Length() != 1) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
     }
 
     if (!args[0]->IsString()) {
-        ThrowException(Exception::TypeError(String::New("Wrong arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
     }
 
-    if (!_db) {
-        ThrowException(Exception::Error(String::New("database is closed")));
-        return scope.Close(Undefined());
+    if (!obj->_db) {
+        NanThrowError("database is closed");
+        NanReturnUndefined();
     }
 
-    String::AsciiValue hash(args[0]);
-
-    if (_db->insert(HmSearch::parse_hexhash(*hash))) {
-        return scope.Close(Undefined());
+    NanAsciiString hash(args[0]);
+    if (obj->_db->insert(HmSearch::parse_hexhash(*hash))) {
+        NanReturnUndefined();
     }
     else {
-        ThrowException(Exception::Error(String::New(_db->get_last_error())));
-        return scope.Close(Undefined());
+        NanThrowError(obj->_db->get_last_error());
+        NanReturnUndefined();
     }
 }
 
 
-Handle<Value> HmObject::lookup_sync(const Arguments& args)
+NAN_METHOD(HmObject::lookup_sync)
 {
+    NanScope();
+
     HmObject* obj = unwrap(args.This());
 
-    if (obj) {
-        return obj->lookup(args, true);
+    if (!obj) {
+        NanReturnUndefined();
     }
-    else {
-        return Handle<Value>();
-    }
-}
-
-
-Handle<Value> HmObject::lookup(const Arguments& args, bool sync)
-{
-    HandleScope scope;
 
     if (args.Length() < 1 || args.Length() > 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
     }
 
     if (!args[0]->IsString() ||
         (args.Length() > 1 && !args[1]->IsNumber())) {
-        ThrowException(Exception::TypeError(String::New("Wrong arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
     }
 
-    if (!_db) {
-        ThrowException(Exception::Error(String::New("database is closed")));
-        return scope.Close(Undefined());
+    if (!obj->_db) {
+        NanThrowError("database is closed");
+        NanReturnUndefined();
     }
 
-    String::AsciiValue hash(args[0]);
+    NanAsciiString hash(args[0]);
     int max_error = args.Length() > 1 ? args[1]->IntegerValue() : -1;
 
     HmSearch::LookupResultList matches;
-    if (_db->lookup(HmSearch::parse_hexhash(*hash), matches, max_error)) {
+    if (obj->_db->lookup(HmSearch::parse_hexhash(*hash), matches, max_error)) {
         size_t elements = matches.size();
-        Local<Array> a = Array::New(elements);
+        Local<Array> a = NanNew<Array>(elements);
 
         if (a.IsEmpty()) {
             // error creating the array
-            return scope.Close(Undefined());
+            NanReturnUndefined();
         }
 
         int i = 0;
         for (HmSearch::LookupResultList::const_iterator res = matches.begin();
              res != matches.end();
              ++res, ++i) {
-            Local<Object> obj = Object::New();
+            Local<Object> obj = NanNew<Object>();
             std::string hexhash = HmSearch::format_hexhash(res->hash);
-            obj->Set(String::NewSymbol("hash"), String::New(hexhash.c_str()));
-            obj->Set(String::NewSymbol("distance"), Integer::New(res->distance));
+            obj->Set(NanNew<String>("hash"), NanNew<String>(hexhash.c_str()));
+            obj->Set(NanNew<String>("distance"), NanNew<Integer>(res->distance));
             a->Set(i, obj);
         }
 
-        return scope.Close(a);
+        NanReturnValue(a);
     }
     else {
-        ThrowException(Exception::Error(String::New(_db->get_last_error())));
-        return scope.Close(Undefined());
+        NanThrowError(obj->_db->get_last_error());
+        NanReturnUndefined();
     }
 }
 
 
-Handle<Value> HmObject::close_sync(const Arguments& args)
+NAN_METHOD(HmObject::close_sync)
 {
+    NanScope();
+    
     HmObject* obj = unwrap(args.This());
 
-    if (obj) {
-        return obj->close(args, true);
+    if (!obj) {
+        NanReturnUndefined();
     }
-    else {
-        return Handle<Value>();
-    }
-}
-
-
-Handle<Value> HmObject::close(const Arguments& args, bool sync)
-{
-    HandleScope scope;
 
     if (args.Length() != 0) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
     }
 
-    if (_db) {
-        if (!_db->close()) {
-            ThrowException(Exception::Error(String::New(_db->get_last_error())));
+    if (obj->_db) {
+        if (!obj->_db->close()) {
+            NanThrowError(obj->_db->get_last_error());
         }
 
-        delete _db;
-        _db = NULL;
+        delete obj->_db;
+        obj->_db = NULL;
     }
 
-    return scope.Close(Undefined());
+    NanReturnUndefined();
 }
 
 
@@ -279,85 +240,78 @@ Handle<Value> HmObject::close(const Arguments& args, bool sync)
  * Module interface
  */
 
-static Handle<Value> init(const Arguments& args, bool sync)
+static NAN_METHOD(init_sync)
 {
-    HandleScope scope;
+    NanScope();
 
     if (args.Length() != 4) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
     }
 
     if (!args[0]->IsString() || !args[1]->IsNumber() || !args[2]->IsNumber() || !args[3]->IsNumber()) {
-        ThrowException(Exception::TypeError(String::New("Wrong arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
     }
 
-    String::Utf8Value path(args[0]);
+    NanUtf8String path(args[0]);
     unsigned hash_bits = args[1]->IntegerValue();
     unsigned max_error = args[2]->IntegerValue();
     uint64_t num_hashes = args[3]->NumberValue();
     std::string error_msg;
 
     if (!HmSearch::init(*path, hash_bits, max_error, num_hashes, &error_msg)) {
-        ThrowException(Exception::Error(String::New(error_msg.c_str())));
+        NanThrowError(error_msg.c_str());
     }
 
-    return scope.Close(Undefined());
-}
-
-static Handle<Value> hmsearch_initSync(const Arguments& args) {
-    return init(args, true);
+    NanReturnUndefined();
 }
 
 
-static Handle<Value> open(const Arguments& args, bool sync) {
-    HandleScope scope;
+static NAN_METHOD(open_sync)
+{
+    NanScope();
 
     if (args.Length() != 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
     }
 
     if (!args[0]->IsString() || !args[1]->IsNumber()) {
-        ThrowException(Exception::TypeError(String::New("Wrong arguments")));
-        return scope.Close(Undefined());
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
     }
 
-    String::Utf8Value path(args[0]);
+    NanUtf8String path(args[0]);
     HmSearch::OpenMode mode = HmSearch::OpenMode(args[1]->IntegerValue());
     std::string error_msg;
 
     HmSearch* db = HmSearch::open(*path, mode, &error_msg);
 
     if (db) {
-        return scope.Close(HmObject::create_with_db(db));
+        NanReturnValue(HmObject::create_with_db(db));
     }
     else {
-        ThrowException(Exception::Error(String::New(error_msg.c_str())));
-        return scope.Close(Undefined());
+        NanThrowError(error_msg.c_str());
+        NanReturnUndefined();
     }
 }
 
-
-static Handle<Value> hmsearch_openSync(const Arguments& args) {
-    return open(args, true);
-}
 
 void module_init(Handle<Object> exports) {
     HmObject::init();
 
-    exports->Set(String::NewSymbol("READONLY"),
-                 Integer::New(HmSearch::READONLY));
+    exports->Set(NanNew<String>("READONLY"),
+                 NanNew<Integer>(HmSearch::READONLY));
 
-    exports->Set(String::NewSymbol("READWRITE"),
-                 Integer::New(HmSearch::READWRITE));
+    exports->Set(NanNew<String>("READWRITE"),
+                 NanNew<Integer>(HmSearch::READWRITE));
 
-    exports->Set(String::NewSymbol("initSync"),
-                 FunctionTemplate::New(hmsearch_initSync)->GetFunction());
+    exports->Set(NanNew<String>("initSync"),
+                 NanNew<FunctionTemplate>(init_sync)->GetFunction());
 
-    exports->Set(String::NewSymbol("openSync"),
-                 FunctionTemplate::New(hmsearch_openSync)->GetFunction());
+    exports->Set(NanNew<String>("openSync"),
+                 NanNew<FunctionTemplate>(open_sync)->GetFunction());
 }
 
 NODE_MODULE(hmsearch, module_init)
