@@ -43,6 +43,8 @@ private:
     static Persistent<Function> constructor;
     static Persistent<FunctionTemplate> prototype;
 
+    static NAN_PROPERTY_GETTER(get_open);
+
     static NAN_METHOD(insert_sync);
     static NAN_METHOD(lookup_sync);
     static NAN_METHOD(close_sync);
@@ -171,6 +173,11 @@ void HmObject::init()
     tpl->SetClassName(NanNew<String>("HmObject"));
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
+    tpl->InstanceTemplate()->SetAccessor(
+        NanNew<String>("open"), get_open,
+        0, Handle<Value>(), DEFAULT,
+        static_cast<PropertyAttribute>(ReadOnly|DontDelete));
+
     // Prototype
     NanSetPrototypeTemplate(tpl, "insertSync",
                             NanNew<FunctionTemplate>(insert_sync)->GetFunction());
@@ -249,6 +256,28 @@ NAN_METHOD(HmObject::New)
         // Invoked as plain function `HmObject(...)`, turn into construct call.
         NanReturnValue(constructor->NewInstance());
     }
+}
+
+
+NAN_PROPERTY_GETTER(HmObject::get_open)
+{
+    NanScope();
+
+    HmObject* obj = unwrap(args.This());
+
+    if (!obj) {
+        NanReturnUndefined();
+    }
+
+    bool open = false;
+
+    uv_mutex_lock(&obj->_lock);
+    if (obj->_db) {
+        open = true;
+    }
+    uv_mutex_unlock(&obj->_lock);
+
+    NanReturnValue(open ? NanTrue() : NanFalse());
 }
 
 

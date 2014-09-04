@@ -4,7 +4,7 @@
    Distributed under an MIT license, please see LICENSE in the top dir.
 */
 
-/* global describe, it, before, after */
+/* global describe, it, before, after, beforeEach, afterEach */
 
 'use strict';
 
@@ -99,13 +99,13 @@ describe('sync', function() {
     describe('open', function() {
         var path;
 
-        before(function() {
+        beforeEach(function() {
             path = temp.path({ suffix: '.kch' });
             hmsearch.initSync(path, 64, 5, 100);
             expect( fs.existsSync(path) ).to.be.ok();
         });
 
-        after(function() {
+        afterEach(function() {
             if (fs.existsSync(path)) {
                 fs.unlinkSync(path);
             }
@@ -113,7 +113,8 @@ describe('sync', function() {
 
         it('should open and close database', function() {
             var db = hmsearch.openSync(path, hmsearch.READONLY);
-            expect( db ).to.have.property( 'closeSync' );
+            expect( db ).to.be.ok();
+            expect( db.open ).to.be( true );
 
             db.closeSync();
         });
@@ -127,6 +128,7 @@ describe('sync', function() {
             hmsearch.initSync(path, 64, 5, 100);
             expect( fs.existsSync(path) ).to.be.ok();
             db = hmsearch.openSync(path, hmsearch.READWRITE);
+            expect( db.open ).to.be( true );
         });
 
         after(function() {
@@ -160,7 +162,9 @@ describe('sync', function() {
 
             before(function() {
                 db.closeSync();
+                expect( db.open ).to.be( false );
                 db = hmsearch.openSync(path, hmsearch.READONLY);
+                expect( db.open ).to.be( true );
             });
 
             it('should throw exception on bad arguments', function() {
@@ -243,6 +247,7 @@ describe('sync', function() {
 
                 it('should close the database', function() {
                     db.closeSync();
+                    expect( db.open ).to.be( false );
 
                     expect( function() { db.lookupSync(non_existing); }).withArgs( )
                         .to.throwException( Error );

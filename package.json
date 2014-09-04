@@ -24,6 +24,7 @@
         "nan": "~1.3.0"
     },
     "devDependencies": {
+        "bluebird": "1.x.x",
         "jshint": "*",
         "expect.js": "0.3.x",
         "mocha": "1.x.x",

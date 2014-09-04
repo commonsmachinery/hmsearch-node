@@ -11,7 +11,5 @@
     "unused": "vars",
     "strict": true,
 
-    "node": true,
-
-    "predef": [ "-Promise" ]
+    "node": true
 }

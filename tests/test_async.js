@@ -4,15 +4,19 @@
    Distributed under an MIT license, please see LICENSE in the top dir.
 */
 
-/* global describe, it, before, after */
+/* global describe, it, beforeEach, afterEach */
 
 'use strict';
 
+var BPromise = require('bluebird');
 var expect = require('expect.js');
 var fs = require('fs');
 var temp = require('temp');
 var hmsearch = require('../index');
 
+
+var initAsync = BPromise.promisify(hmsearch.init);
+var openAsync = BPromise.promisify(hmsearch.open);
 
 describe('async', function() {
     describe('init', function() {
@@ -35,32 +39,25 @@ describe('async', function() {
         describe('successful calls', function() {
             var path1, path2;
 
-            before(function() {
+            beforeEach(function() {
                 path1 = temp.path({ suffix: '.kch' });
                 path2 = temp.path({ suffix: '.kch' });
             });
 
-            after(function() {
+            afterEach(function() {
                 if (fs.existsSync(path1)) { fs.unlinkSync(path1); }
                 if (fs.existsSync(path2)) { fs.unlinkSync(path2); }
             });
 
-            it('should create multiple new files in parallel', function(done) {
-                var calls = 2;
-
-                hmsearch.init(path1, 64, 5, 100, function(err) {
-                    expect( err ).to.be( undefined );
-                    expect( fs.existsSync(path1) ).to.be.ok();
-
-                    if (--calls <= 0) { done(); }
-                });
-
-                hmsearch.init(path2, 64, 5, 100, function(err) {
-                    expect( err ).to.be( undefined );
-                    expect( fs.existsSync(path2) ).to.be.ok();
-
-                    if (--calls <= 0) { done(); }
-                });
+            it('should create multiple new files in parallel', function() {
+                return BPromise.all([
+                    initAsync(path1, 64, 5, 100).then(function() {
+                        expect( fs.existsSync(path1) ).to.be.ok();
+                    }),
+                    initAsync(path2, 64, 5, 100).then(function() {
+                        expect( fs.existsSync(path2) ).to.be.ok();
+                    })
+                ]);
             });
         });
     });
@@ -86,7 +83,7 @@ describe('async', function() {
         describe('successful calls', function() {
             var path1, path2;
 
-            before(function() {
+            beforeEach(function() {
                 path1 = temp.path({ suffix: '.kch' });
                 hmsearch.initSync(path1, 64, 5, 100);
                 expect( fs.existsSync(path1) ).to.be.ok();
@@ -96,35 +93,30 @@ describe('async', function() {
                 expect( fs.existsSync(path2) ).to.be.ok();
             });
 
-            after(function() {
+            afterEach(function() {
                 if (fs.existsSync(path1)) { fs.unlinkSync(path1); }
                 if (fs.existsSync(path2)) { fs.unlinkSync(path2); }
             });
 
-            it('should open and close databases', function(done) {
-                var calls = 2;
+            it('should open and close databases', function() {
 
-                hmsearch.open(path1, hmsearch.READONLY, function(err, db) {
-                    expect( err ).to.be( null );
-                    expect( db ).to.be.ok();
+                return BPromise.all([
+                    openAsync(path1, hmsearch.READONLY).then(function(db) {
+                        expect( db ).to.be.ok();
+                        expect( db.open ).to.be( true );
 
-                    // TODO: async close
-                    expect( db ).to.have.property( 'closeSync' );
-                    db.closeSync();
+                        // TODO: async close
+                        db.closeSync();
+                    }),
 
-                    if (--calls <= 0) { done(); }
-                });
+                    openAsync(path2, hmsearch.READONLY).then(function(db) {
+                        expect( db ).to.be.ok();
+                        expect( db.open ).to.be( true );
 
-                hmsearch.open(path2, hmsearch.READONLY, function(err, db) {
-                    expect( err ).to.be( null );
-                    expect( db ).to.be.ok();
-
-                    // TODO: async close
-                    expect( db ).to.have.property( 'closeSync' );
-                    db.closeSync();
-
-                    if (--calls <= 0) { done(); }
-                });
+                        // TODO: async close
+                        db.closeSync();
+                    }),
+                ]);
             });
         });
     });
