@@ -307,11 +307,12 @@ NAN_METHOD(HmObject::insert_sync)
     }
 
     NanAsciiString hash(args[0]);
-    if (obj->_db->insert(HmSearch::parse_hexhash(*hash))) {
+    std::string error_msg;
+    if (obj->_db->insert(HmSearch::parse_hexhash(*hash), &error_msg)) {
         NanReturnUndefined();
     }
     else {
-        NanThrowError(obj->_db->get_last_error());
+        NanThrowError(error_msg.c_str());
         NanReturnUndefined();
     }
 }
@@ -347,7 +348,8 @@ NAN_METHOD(HmObject::lookup_sync)
     int max_error = args.Length() > 1 ? args[1]->IntegerValue() : -1;
 
     HmSearch::LookupResultList matches;
-    if (obj->_db->lookup(HmSearch::parse_hexhash(*hash), matches, max_error)) {
+    std::string error_msg;
+    if (obj->_db->lookup(HmSearch::parse_hexhash(*hash), matches, max_error, &error_msg)) {
         size_t elements = matches.size();
         Local<Array> a = NanNew<Array>(elements);
 
@@ -370,7 +372,7 @@ NAN_METHOD(HmObject::lookup_sync)
         NanReturnValue(a);
     }
     else {
-        NanThrowError(obj->_db->get_last_error());
+        NanThrowError(error_msg.c_str());
         NanReturnUndefined();
     }
 }
@@ -392,8 +394,9 @@ NAN_METHOD(HmObject::close_sync)
     }
 
     if (obj->_db) {
-        if (!obj->_db->close()) {
-            NanThrowError(obj->_db->get_last_error());
+        std::string error_msg;
+        if (!obj->_db->close(&error_msg)) {
+            NanThrowError(error_msg.c_str());
         }
 
         delete obj->_db;
