@@ -21,6 +21,19 @@ public:
 
     static Local<Value> create_with_db(HmSearch *db);
 
+    // Since we may have worker threads active, we must protect the
+    // database object from being closed while any insert or lookup
+    // operation is in progress.
+
+    // Get the database, increasing the user count
+    HmSearch* get_db();
+
+    // Release the database, decreasing the user count
+    void release_db();
+
+    // Close the DB, waiting until any users have released it
+    bool close_db(std::string& error_msg);
+
 private:
     HmObject()
         : _db(NULL)
@@ -45,19 +58,12 @@ private:
 
     static NAN_PROPERTY_GETTER(get_open);
 
+    static NAN_METHOD(insert_cb);
     static NAN_METHOD(insert_sync);
+    static NAN_METHOD(lookup_cb);
     static NAN_METHOD(lookup_sync);
+    static NAN_METHOD(close_cb);
     static NAN_METHOD(close_sync);
-
-    // Since we may have worker threads active, we must protect the
-    // database object from being closed while any insert or lookup
-    // operation is in progress.
-
-    // Get the database, increasing the user count
-    HmSearch* get_db();
-
-    // Release the database, decreasing the user count
-    void release_db();
 
     uv_mutex_t _lock;
     uv_cond_t _cond;
@@ -68,6 +74,7 @@ private:
 Persistent<Function> HmObject::constructor;
 Persistent<FunctionTemplate> HmObject::prototype;
 
+static Local<Value> build_lookup_result(const HmSearch::LookupResultList& matches);
 
 /*
  * Async workers
@@ -156,12 +163,109 @@ public:
         NanDisposePersistent(_handle);
     }
 
-private:
+protected:
     Persistent<Object> _handle;
     HmObject *_obj;
 };
 
 
+class CloseWorker : public HmObjectWorker
+{
+public:
+    CloseWorker(NanCallback *callback,
+                Handle<Object> handle,
+                HmObject* obj)
+        : HmObjectWorker(callback, handle, obj)
+        { }
+
+    void Execute() {
+        std::string error_msg;
+        if (!_obj->close_db(error_msg)) {
+            SetErrorMessage(error_msg.c_str());
+        }
+    }
+};
+
+
+class InsertWorker : public HmObjectWorker
+{
+public:
+    InsertWorker(NanCallback *callback,
+                 Handle<Object> handle,
+                 HmObject* obj,
+                 const HmSearch::hash_string& hash)
+        : HmObjectWorker(callback, handle, obj)
+        , _hash(hash)
+        { }
+
+    void Execute() {
+        HmSearch *db = _obj->get_db();
+        if (db) {
+            std::string error_msg;
+            if (!db->insert(_hash, &error_msg)) {
+                SetErrorMessage(error_msg.c_str());
+            }
+
+            _obj->release_db();
+        }
+        else {
+            SetErrorMessage("database is closed");
+        }
+    }
+
+private:
+    HmSearch::hash_string _hash;
+};
+
+
+class LookupWorker : public HmObjectWorker
+{
+public:
+    LookupWorker(NanCallback *callback,
+                 Handle<Object> handle,
+                 HmObject* obj,
+                 const HmSearch::hash_string& hash,
+                 int max_error)
+        : HmObjectWorker(callback, handle, obj)
+        , _hash(hash)
+        , _max_error(max_error)
+        { }
+
+    void Execute() {
+        HmSearch *db = _obj->get_db();
+        if (db) {
+            std::string error_msg;
+            if (!db->lookup(_hash, _matches, _max_error, &error_msg)) {
+                SetErrorMessage(error_msg.c_str());
+            }
+
+            _obj->release_db();
+        }
+        else {
+            SetErrorMessage("database is closed");
+        }
+    }
+
+    void HandleOKCallback() {
+        NanScope();
+
+        Local<Value> result = build_lookup_result(_matches);
+        Local<Value> argv[] = { NanNull(), result };
+
+        callback->Call(2, argv);
+    }
+
+private:
+    HmSearch::hash_string _hash;
+    int _max_error;
+    HmSearch::LookupResultList _matches;
+};
+
+
+
+/*
+ * HmObject implementaton
+ */
 
 void HmObject::init()
 {
@@ -179,10 +283,16 @@ void HmObject::init()
         static_cast<PropertyAttribute>(ReadOnly|DontDelete));
 
     // Prototype
+    NanSetPrototypeTemplate(tpl, "insert",
+                            NanNew<FunctionTemplate>(insert_cb)->GetFunction());
     NanSetPrototypeTemplate(tpl, "insertSync",
                             NanNew<FunctionTemplate>(insert_sync)->GetFunction());
+    NanSetPrototypeTemplate(tpl, "lookup",
+                            NanNew<FunctionTemplate>(lookup_cb)->GetFunction());
     NanSetPrototypeTemplate(tpl, "lookupSync",
                             NanNew<FunctionTemplate>(lookup_sync)->GetFunction());
+    NanSetPrototypeTemplate(tpl, "close",
+                            NanNew<FunctionTemplate>(close_cb)->GetFunction());
     NanSetPrototypeTemplate(tpl, "closeSync",
                             NanNew<FunctionTemplate>(close_sync)->GetFunction());
 
@@ -223,8 +333,8 @@ HmSearch* HmObject::get_db()
 
     uv_mutex_lock(&_lock);
     if (_db) {
-        db = _db;
         ++_db_users;
+        db = _db;
     }
     uv_mutex_unlock(&_lock);
 
@@ -234,11 +344,32 @@ HmSearch* HmObject::get_db()
 void HmObject::release_db()
 {
     uv_mutex_lock(&_lock);
-    if (--_db_users <= 0) {
+    --_db_users;
+    if (_db_users <= 0) {
         // Tell pending close operation that it can proceed
         uv_cond_broadcast(&_cond);
     }
     uv_mutex_unlock(&_lock);
+}
+
+
+bool HmObject::close_db(std::string& error_msg)
+{
+    bool res = true;
+
+    uv_mutex_lock(&_lock);
+    while (_db_users > 0) {
+        uv_cond_wait(&_cond, &_lock);
+    }
+
+    if (_db) {
+        res = _db->close(&error_msg);
+        delete _db;
+        _db = NULL;
+    }
+    uv_mutex_unlock(&_lock);
+
+    return res;
 }
 
 
@@ -281,12 +412,46 @@ NAN_PROPERTY_GETTER(HmObject::get_open)
 }
 
 
+NAN_METHOD(HmObject::insert_cb)
+{
+    NanScope();
+
+    HmObject* obj = unwrap(args.This());
+    if (!obj) {
+        NanReturnUndefined();
+    }
+
+    if (args.Length() != 2) {
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
+    }
+
+    if (!args[0]->IsString() || !args[1]->IsFunction()) {
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
+    }
+
+    Local<Function> callbackHandle = args[1].As<Function>();
+
+    NanAsciiString hexhash(args[0]);
+    HmSearch::hash_string hash = HmSearch::parse_hexhash(*hexhash);
+
+    NanAsyncQueueWorker(
+        new InsertWorker(
+            new NanCallback(callbackHandle),
+            args.This(),
+            obj,
+            hash));
+
+    NanReturnUndefined();
+}
+
+
 NAN_METHOD(HmObject::insert_sync)
 {
     NanScope();
 
     HmObject* obj = unwrap(args.This());
-
     if (!obj) {
         NanReturnUndefined();
     }
@@ -318,12 +483,50 @@ NAN_METHOD(HmObject::insert_sync)
 }
 
 
+NAN_METHOD(HmObject::lookup_cb)
+{
+    NanScope();
+
+    HmObject* obj = unwrap(args.This());
+    if (!obj) {
+        NanReturnUndefined();
+    }
+
+    if (args.Length() < 2 || args.Length() > 3) {
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
+    }
+
+    if (!args[0]->IsString() ||
+        (args.Length() > 2 && !args[1]->IsNumber()) ||
+        !args[args.Length() - 1]->IsFunction()) {
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
+    }
+
+    Local<Function> callbackHandle = args[args.Length() - 1].As<Function>();
+
+    NanAsciiString hexhash(args[0]);
+    HmSearch::hash_string hash = HmSearch::parse_hexhash(*hexhash);
+    int max_error = args.Length() > 2 ? args[1]->IntegerValue() : -1;
+
+    NanAsyncQueueWorker(
+        new LookupWorker(
+            new NanCallback(callbackHandle),
+            args.This(),
+            obj,
+            hash,
+            max_error));
+
+    NanReturnUndefined();
+}
+
+
 NAN_METHOD(HmObject::lookup_sync)
 {
     NanScope();
 
     HmObject* obj = unwrap(args.This());
-
     if (!obj) {
         NanReturnUndefined();
     }
@@ -350,26 +553,14 @@ NAN_METHOD(HmObject::lookup_sync)
     HmSearch::LookupResultList matches;
     std::string error_msg;
     if (obj->_db->lookup(HmSearch::parse_hexhash(*hash), matches, max_error, &error_msg)) {
-        size_t elements = matches.size();
-        Local<Array> a = NanNew<Array>(elements);
+        Local<Value> result = build_lookup_result(matches);
 
-        if (a.IsEmpty()) {
-            // error creating the array
+        if (result.IsEmpty()) {
+            NanThrowError("error building result array");
             NanReturnUndefined();
         }
 
-        int i = 0;
-        for (HmSearch::LookupResultList::const_iterator res = matches.begin();
-             res != matches.end();
-             ++res, ++i) {
-            Local<Object> obj = NanNew<Object>();
-            std::string hexhash = HmSearch::format_hexhash(res->hash);
-            obj->Set(NanNew<String>("hash"), NanNew<String>(hexhash.c_str()));
-            obj->Set(NanNew<String>("distance"), NanNew<Integer>(res->distance));
-            a->Set(i, obj);
-        }
-
-        NanReturnValue(a);
+        NanReturnValue(result);
     }
     else {
         NanThrowError(error_msg.c_str());
@@ -378,12 +569,71 @@ NAN_METHOD(HmObject::lookup_sync)
 }
 
 
-NAN_METHOD(HmObject::close_sync)
+static Local<Value> build_lookup_result(
+    const HmSearch::LookupResultList& matches)
+{
+    NanScope();
+
+    size_t elements = matches.size();
+    Local<Array> a = NanNew<Array>(elements);
+
+    if (a.IsEmpty()) {
+        // error creating the array
+        NanReturnValue(a);
+    }
+
+    int i = 0;
+    for (HmSearch::LookupResultList::const_iterator res = matches.begin();
+         res != matches.end();
+         ++res, ++i)
+    {
+        Local<Object> obj = NanNew<Object>();
+        std::string hexhash = HmSearch::format_hexhash(res->hash);
+        obj->Set(NanNew<String>("hash"), NanNew<String>(hexhash.c_str()));
+        obj->Set(NanNew<String>("distance"), NanNew<Integer>(res->distance));
+        a->Set(i, obj);
+    }
+
+    NanReturnValue(a);
+}
+
+
+
+NAN_METHOD(HmObject::close_cb)
 {
     NanScope();
     
     HmObject* obj = unwrap(args.This());
+    if (!obj) {
+        NanReturnUndefined();
+    }
 
+    if (args.Length() != 1) {
+        NanThrowTypeError("Wrong number of arguments");
+        NanReturnUndefined();
+    }
+
+    if (!args[0]->IsFunction()) {
+        NanThrowTypeError("Wrong arguments");
+        NanReturnUndefined();
+    }
+
+    Local<Function> callbackHandle = args[0].As<Function>();
+
+    NanAsyncQueueWorker(
+        new CloseWorker(
+            new NanCallback(callbackHandle),
+            args.This(),
+            obj));
+
+    NanReturnUndefined();
+}
+
+NAN_METHOD(HmObject::close_sync)
+{
+    NanScope();
+
+    HmObject* obj = unwrap(args.This());
     if (!obj) {
         NanReturnUndefined();
     }
@@ -393,14 +643,9 @@ NAN_METHOD(HmObject::close_sync)
         NanReturnUndefined();
     }
 
-    if (obj->_db) {
-        std::string error_msg;
-        if (!obj->_db->close(&error_msg)) {
-            NanThrowError(error_msg.c_str());
-        }
-
-        delete obj->_db;
-        obj->_db = NULL;
+    std::string error_msg;
+    if (!obj->close_db(error_msg)) {
+        NanThrowError(error_msg.c_str());
     }
 
     NanReturnUndefined();

@@ -51,9 +51,9 @@ describe('sync', function() {
     describe('bad calls to init', function() {
         it('should throw exception on bad arguments', function() {
             expect( hmsearch.initSync ).withArgs( )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
             expect( hmsearch.initSync ).withArgs( 1, 2, 3, 4 )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
         });
 
         it('should throw exception on invalid path', function() {
@@ -84,9 +84,9 @@ describe('sync', function() {
     describe('bad calls to open', function() {
         it('should throw exception on bad arguments', function() {
             expect( hmsearch.openSync ).withArgs( 'foo.kch' )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
             expect( hmsearch.openSync ).withArgs( 0, 'foo.kch' )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
         });
 
         it('should throw exception on non-existing DB', function() {
@@ -140,14 +140,14 @@ describe('sync', function() {
         it('should throw exception on bad arguments', function() {
             var insert = function() { db.insertSync.apply(db, arguments); };
             expect( insert ).withArgs( )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
             expect( insert ).withArgs( 0 )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
         });
 
         it('should throw exception on bad object', function() {
             expect( function() { db.insertSync.apply({}, arguments); } ).withArgs( )
-                .to.throwException( Error );
+                .to.throwException( TypeError );
         });
 
         it('should add hashes to the database', function() {
@@ -170,14 +170,14 @@ describe('sync', function() {
             it('should throw exception on bad arguments', function() {
                 var lookup = function() { db.lookupSync.apply(db, arguments); };
                 expect( lookup ).withArgs( )
-                    .to.throwException( Error );
+                    .to.throwException( TypeError );
                 expect( lookup ).withArgs( 0 )
-                    .to.throwException( Error );
+                    .to.throwException( TypeError );
             });
 
             it('should throw exception on bad object', function() {
                 expect( function() { db.lookupSync.apply({}, arguments); } ).withArgs( )
-                    .to.throwException( Error );
+                    .to.throwException( TypeError );
             });
 
             it('should not find missing hash', function() {
@@ -237,12 +237,12 @@ describe('sync', function() {
                 it('should throw exception on bad arguments', function() {
                     var lookup = function() { db.closeSync.apply(db, arguments); };
                     expect( lookup ).withArgs( 0 )
-                        .to.throwException( Error );
+                        .to.throwException( TypeError );
                 });
 
                 it('should throw exception on bad object', function() {
                     expect( function() { db.closeSync.apply({}, arguments); } ).withArgs( )
-                        .to.throwException( Error );
+                        .to.throwException( TypeError );
                 });
 
                 it('should close the database', function() {

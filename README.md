@@ -27,27 +27,33 @@ For details on these methods, see the documentation for the C++
 library:
 https://github.com/commonsmachinery/hmsearch/blob/master/hmsearch.h
 
-The API only supports synchronous methods now, but callback methods
-will be added soon.
-
 The synchronous methods all throw an `Error` if the operation fails,
-with the message providing further details.
+with the message providing further details.  The asynchronous methods
+instead invoke the callback with the first argument set to an `Error`
+instance.
+
 
 ### Initialise a database
+
+    hmsearch.initdb(path, hash_bits, max_error, num_hashes, function(err) {...})
 
     hmsearch.initdbSync(path, hash_bits, max_error, num_hashes)
 
 
 ### Open a database
 
+    hmsearch.open(path, mode, function(err, db) {...})
+
     db = hmsearch.openSync(path, mode)
 
 Mode is either `hmsearch.READONLY` or `hmsearch.READWRITE`.
 
-Returns a new database object.
+`db` is a newly opened database object.
 
 
 ### Close a database
+
+    db.close(function(err) {...})
 
     db.closeSync()
 
@@ -62,12 +68,16 @@ collected.
 
 ### Insert a hash
 
+    db.insert(hash, function(err) {...})
+
     db.insertSync(hash)
 
 `hash` must be a hexadecimal string of the correct length.
 
 
 ### Lookup a hash
+
+    db.lookupSync(query, [max_error], function(err, matches) {...})
 
     matches = db.lookupSync(query, [max_error])
 
@@ -80,7 +90,7 @@ hamming distance to the `query` hash:
 
     [ { hash: '0123456789abcdef', distance: 3 }, ... ]
 
-An empty list is returned if no matches are found.
+`matches` is an empty list if no hashes are found.
 
 
 License
