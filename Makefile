@@ -32,4 +32,8 @@ clean:
 test: 
 	$(MOCHA) $(MOCHA_FLAGS) $(mocha-files)
 
-.PHONY: all lint clean test
+dist:
+	git clean -fx .
+	npm pack
+
+.PHONY: all lint clean test dist

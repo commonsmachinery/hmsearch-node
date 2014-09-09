@@ -1,16 +1,18 @@
 {
     "name": "hmsearch",
+    "version": "0.1.0",
     "description": "Efficiently find hashes within a certain hamming distance, typically used for perceptual hashing.",
     "keywords": [
         "hamming",
         "hash",
         "hashes"
     ],
-    "version": "0.0.1",
+    "homepage": "https://github.com/commonsmachinery/hmsearch-node",
     "license": "MIT",
     "author": {
         "name": "Commons Machinery",
-        "email": "dev@commonsmachinery.se"
+        "email": "dev@commonsmachinery.se",
+        "url": "http://commonsmachinery.se"
     },
     "repository": {
         "type": "git",
@@ -18,7 +20,7 @@
     },
     "main": "./index",
     "scripts": {
-        "install": "node-gyp rebuild"
+        "test": "make test"
     },
     "dependencies": {
         "nan": "~1.3.0"
@@ -29,5 +31,6 @@
         "expect.js": "0.3.x",
         "mocha": "1.x.x",
         "temp": "0.8.x"
-    }
+    },
+    "os": [ "linux" ]
 }
